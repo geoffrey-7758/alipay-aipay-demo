@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 敏感配置：绝不提交
+.env
+.env.*
+!.env.example
+
+# 支付宝沙箱本地配置
+.alipay-sandbox.json
+.alipay/
+
+# 订单运行数据（部署时不提交，运行时自动生成）
+orders.json
+
+# 本地联调脚本（仅本地演示用，不部署到生产）
+test-server.js
+test-client.js
+
+# 本地指引文档（含个人信息，不提交到公开仓库）
+部署指南.md
+签约资料清单.md

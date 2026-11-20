@@ -1,0 +1,16 @@
+{
+  "name": "alipay-aipay-demo",
+  "version": "1.0.0",
+  "description": "支付宝 AI 按量付费（A2M）Node.js + Express 演示项目",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "alipay-sdk": "^3.4.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2"
+  }
+}
