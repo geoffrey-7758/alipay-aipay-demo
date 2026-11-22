@@ -38,16 +38,17 @@ const config = {
     // 支付宝公钥：用来验证"支付宝返回给我的数据确实是真的支付宝发的"
     alipayPublicKey: readEnv('AIPAY_ALIPAY_PUBLIC_KEY'),
 
-    // 网关地址：沙箱固定是这个。生产环境才改成 openapi.alipay.com
-    // 允许用环境变量 ALIPAY_GATEWAY 覆盖，但默认一定是沙箱网关
-    gateway: process.env.ALIPAY_GATEWAY || 'https://openapi-sandbox.dl.alipaydev.com/gateway.do',
+    // 网关地址：默认使用正式线上网关（生产环境）
+    // 如需本地沙箱联调，在环境变量显式设置 ALIPAY_GATEWAY=https://openapi-sandbox.dl.alipaydev.com/gateway.do 覆盖
+    gateway: process.env.ALIPAY_GATEWAY || 'https://openapi.alipay.com/gateway.do',
 
     // 商户 ID（seller_id）：必须是 2088 开头的账号
     // 这里用你截图里沙箱"卖家账号"的用户 UID：2088722120303870
     sellerId: '2088722120303870',
 
-    // serviceId：沙箱联调固定值，不能改。生产上线时才换成真实服务 ID
-    serviceId: 'api_mock_service_id',
+    // serviceId：生产服务 ID（来自支付宝服务注册成功后的真实返回值，审核已通过）
+    // 沙箱联调时的固定值是 api_mock_service_id，上线已替换为下方真实值
+    serviceId: 'API_3127F1D819794292',
   },
 
   // 我们这个演示服务对外提供的资源地址（接口路径）
