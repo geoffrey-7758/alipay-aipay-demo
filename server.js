@@ -209,18 +209,26 @@ async function createPaymentRequired(res) {
       },
     });
 
-    // SDK 返回可能是嵌套结构，也可能是扁平结构，两种都兼容
-    const precreateData = precreateResp.alipay_aipay_agent_payment_precreate_response || precreateResp;
+    // SDK 默认 camelcase:true，会把返回字段转成驼峰：
+    //   - 包裹键：alipay_aipay_agent_payment_precreate_response → alipayAipayAgentPaymentPrecreateResponse
+    //   - 业务字段：amt_pre_pay_id → amtPrePayId
+    // 这里同时兼容下划线和驼峰两种命名，避免取不到值。
+    const precreateData =
+      precreateResp.alipay_aipay_agent_payment_precreate_response ||
+      precreateResp.alipayAipayAgentPaymentPrecreateResponse ||
+      precreateResp;
 
-    // 只有业务码 10000 且有 amt_pre_pay_id 才算预下单成功
-    if (String(precreateData.code) !== '10000' || !precreateData.amt_pre_pay_id) {
+    // 兼容驼峰 amtPrePayId 和下划线 amt_pre_pay_id
+    const amtPrePayId = precreateData.amtPrePayId || precreateData.amt_pre_pay_id;
+
+    // 只有业务码 10000 且拿到预下单号才算成功
+    if (String(precreateData.code) !== '10000' || !amtPrePayId) {
       console.error('预下单失败：', extractAlipayError(precreateData));
       return res.status(502).json({
         code: 'PRECREATE_FAILED',
         message: '支付宝预下单失败：' + extractAlipayError(precreateData),
       });
     }
-    const amtPrePayId = precreateData.amt_pre_pay_id;
     console.log(`预下单成功：outTradeNo=${outTradeNo}, amtPrePayId=${amtPrePayId}`);
 
     // 先把这笔订单存起来（状态：待支付）——重要！不然后面验付时找不到订单
@@ -271,8 +279,11 @@ async function verifyAndDeliver(res, paymentProof) {
     if (clientSession) bizContent.client_session = clientSession;
     const verifyResp = await alipaySdk.exec('alipay.aipay.agent.payment.verify', { bizContent });
 
-    // SDK 返回可能是嵌套结构，也可能是扁平结构，这里两种都兼容
-    const data = verifyResp.alipay_aipay_agent_payment_verify_response || verifyResp;
+    // SDK 默认 camelcase:true，同时兼容下划线/驼峰包裹键与扁平结构
+    const data =
+      verifyResp.alipay_aipay_agent_payment_verify_response ||
+      verifyResp.alipayAipayAgentPaymentVerifyResponse ||
+      verifyResp;
 
     // 业务码 10000 才代表成功
     // 说明：alipay-sdk 在配置 alipayPublicKey 后，exec() 内部会自动验证返回签名 sign，
@@ -346,7 +357,10 @@ async function verifyAndDeliver(res, paymentProof) {
     const confirmResp = await alipaySdk.exec('alipay.aipay.agent.fulfillment.confirm', {
       bizContent: { trade_no: tradeNo },
     });
-    const confirmData = confirmResp.alipay_aipay_agent_fulfillment_confirm_response || confirmResp;
+    const confirmData =
+      confirmResp.alipay_aipay_agent_fulfillment_confirm_response ||
+      confirmResp.alipayAipayAgentFulfillmentConfirmResponse ||
+      confirmResp;
     if (String(confirmData.code) !== '10000') {
       console.error('履约确认失败：', extractAlipayError(confirmData));
       return res.status(502).json({ code: 'FULFILLMENT_CONFIRM_FAILED', message: '履约确认失败，请用同一凭证重试' });
