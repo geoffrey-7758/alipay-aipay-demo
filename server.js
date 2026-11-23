@@ -152,13 +152,17 @@ app.get(config.resource.path, async (req, res) => {
 });
 
 /**
- * 【第 1 步】createPaymentRequired —— 返回 402 账单
+ * 【第 1 步】createPaymentRequired —— 预下单并返回 402 + amtPaymentLink（新版官方协议）
  * ------------------------------------------------------------
  * 当有人没付钱来访问时，我们：
  *   1. 生成一个订单号
- *   2. 写一张账单（多少钱、买什么、什么时候前付、我们的签名...）
- *   3. 把账单 Base64URL 编码后放进 Payment-Needed 响应头
- *   4. 返回 HTTP 402（402 在 HTTP 协议里就是"需要付款"的意思）
+ *   2. 调用支付宝官方预下单接口 alipay.aipay.agent.payment.precreate，
+ *      由支付宝生成账单并返回 amt_pre_pay_id（预下单号）
+ *   3. 把这笔订单存起来（待支付），供付款后验付时核对
+ *   4. 把 amt_pre_pay_id 放进 amtPaymentLink 响应头，返回 HTTP 402
+ *
+ * 与旧版的区别：旧版是商家自己签名生成 Payment-Needed 账单头；
+ * 新版是支付宝服务端生成账单，商家只透传支付宝返回的预下单号。
  */
 async function createPaymentRequired(res) {
   try {
@@ -170,39 +174,42 @@ async function createPaymentRequired(res) {
     const goodsName = config.resource.goodsName;
     const payBefore = formatISO8601WithTimezone(new Date(Date.now() + 30 * 60 * 1000)); // 30分钟内付款有效
 
-    // 生成商家签名（给账单盖章）
-    const sellerSignature = generateSellerSignature({
-      amount, currency, goods_name: goodsName, out_trade_no: outTradeNo,
-      pay_before: payBefore, resource_id: resourceId,
-      seller_id: config.alipay.sellerId, service_id: config.alipay.serviceId,
-    }, config.alipay.privateKey);
+    // --- 调用支付宝官方预下单接口，获取 amt_pre_pay_id ---
+    // 注意：seller_id 不在 precreate 入参里；商品信息由 service_id + goods_name 等提供
+    const precreateResp = await alipaySdk.exec('alipay.aipay.agent.payment.precreate', {
+      bizContent: {
+        out_trade_no: outTradeNo,   // 商户订单号，用于幂等控制
+        amount,                     // 金额（元），不超过 50 元
+        currency,                   // CNY
+        goods_name: goodsName,      // 商品/服务名称
+        service_id: config.alipay.serviceId, // 生产服务 ID
+        pay_before: payBefore,      // 支付截止时间（带时区 ISO 格式）
+        memo: 'AI 内容生成服务按次收费', // 交易备注，用于账单展示（可选）
+      },
+    });
+
+    // SDK 返回可能是嵌套结构，也可能是扁平结构，两种都兼容
+    const precreateData = precreateResp.alipay_aipay_agent_payment_precreate_response || precreateResp;
+
+    // 只有业务码 10000 且有 amt_pre_pay_id 才算预下单成功
+    if (String(precreateData.code) !== '10000' || !precreateData.amt_pre_pay_id) {
+      console.error('预下单失败：', precreateData.sub_msg || precreateData.msg || '未返回 amt_pre_pay_id');
+      return res.status(502).json({
+        code: 'PRECREATE_FAILED',
+        message: '支付宝预下单失败：' + (precreateData.sub_msg || precreateData.msg || '无预下单号'),
+      });
+    }
+    const amtPrePayId = precreateData.amt_pre_pay_id;
+    console.log(`预下单成功：outTradeNo=${outTradeNo}, amtPrePayId=${amtPrePayId}`);
 
     // 先把这笔订单存起来（状态：待支付）——重要！不然后面验付时找不到订单
     orderRepository.createPending({
       outTradeNo, amount: normalizeAmount(amount), currency, resourceId, goodsName, payBefore,
     });
 
-    // 组装账单：分 protocol（协议数据）和 method（商品信息）两部分
-    const paymentNeeded = {
-      protocol: {
-        out_trade_no: outTradeNo,
-        amount, currency, resource_id: resourceId, pay_before: payBefore,
-        seller_signature: sellerSignature,       // 我们刚生成的签名
-        seller_sign_type: 'RSA2',
-        seller_unique_id: config.alipay.sellerId,
-      },
-      method: {
-        seller_name: '演示商户',
-        seller_id: config.alipay.sellerId,
-        seller_app_id: config.alipay.appId,
-        goods_name: goodsName,
-        seller_unique_id_key: 'seller_id',
-        service_id: config.alipay.serviceId,
-      },
-    };
-
-    // 把账单编码后放进响应头，返回 402
-    res.set('Payment-Needed', base64UrlEncode(JSON.stringify(paymentNeeded)));
+    // --- 返回 402 + amtPaymentLink 响应头 ---
+    // amtPaymentLink 的值就是支付宝返回的 amt_pre_pay_id 原文，不做编码
+    res.set('amtPaymentLink', amtPrePayId);
     return res.status(402).json({
       code: 'Payment-Needed', message: '需要支付后才能访问',
       out_trade_no: outTradeNo, amount, currency, goods_name: goodsName,
@@ -247,6 +254,8 @@ async function verifyAndDeliver(res, paymentProof) {
     const data = verifyResp.alipay_aipay_agent_payment_verify_response || verifyResp;
 
     // 业务码 10000 才代表成功
+    // 说明：alipay-sdk 在配置 alipayPublicKey 后，exec() 内部会自动验证返回签名 sign，
+    // 无需也不应在这里重复手工验签（官方要求"用支付宝公钥验签"由 SDK 完成）。
     if (String(data.code) !== '10000') {
       console.error('验付失败：', data.sub_msg || data.msg);
       return createPaymentRequired(res);
@@ -281,11 +290,16 @@ async function verifyAndDeliver(res, paymentProof) {
       console.error('金额不匹配');
       return createPaymentRequired(res);
     }
-    // 资源核对：购买的资源必须就是当前这个接口
-    const finalResourceId = returnedResourceId || (exactSandbox ? order.resourceId : '');
-    if (finalResourceId !== config.resource.path) {
-      console.error('资源不匹配');
-      return createPaymentRequired(res);
+    // 资源归属核对（新版协议）
+    // 官方 verify 文档中 resource_id 字段已标注"已废弃"且为可选，
+    // 返回值可能是支付宝自有格式（如 out_res_id_xxx），不再是商户传的资源路径。
+    // 因此新版以 out_trade_no（外部幂等号，来自我们自己的订单号）作为资源归属锚点：
+    // 订单是通过 verifyOutTradeNo 从本地查出来的，且订单里存的 resourceId 就是本接口，
+    // 这一条已经保证了"这笔支付买的就是当前资源"。
+    // 若支付宝仍返回 resource_id 且非空，仅记录用于日志，不再作为强校验条件。
+    const finalResourceId = returnedResourceId || order.resourceId;
+    if (returnedResourceId) {
+      console.log(`[验付] 支付宝返回 resource_id=${returnedResourceId}（字段已废弃，仅记录）`);
     }
 
     // --- 2.4 履约：生成内容（带幂等保护，同一笔订单不会重复生成）---
