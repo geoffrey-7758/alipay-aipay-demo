@@ -135,6 +135,27 @@ function amountsEqual(a, b) {
   return normalizeAmount(a) !== null && normalizeAmount(a) === normalizeAmount(b);
 }
 
+/**
+ * 工具 F：提取支付宝返回的错误信息（兼容两种字段命名）
+ * ------------------------------------------------------------
+ * 坑：alipay-sdk 返回的业务字段是驼峰 subMsg / subCode，
+ * 而支付宝文档中写的是下划线 sub_msg / sub_code。
+ * 之前代码只取 sub_msg（下划线），取不到就 fallback 到 msg（往往只是 "Invalid Arguments"），
+ * 把真正的错误原因（如 isv.invalid-signature）藏了起来，误导排查。
+ * 这个函数两种都兼容，并带上 subCode，确保真实原因能显示出来。
+ */
+function extractAlipayError(data) {
+  if (!data) return '未知错误';
+  const subCode = data.subCode || data.sub_code || '';
+  const subMsg = data.subMsg || data.sub_msg || '';
+  const msg = data.msg || '';
+  // 优先显示 subCode + subMsg（最具体的错误），其次 msg
+  if (subCode && subMsg) return `${subCode}: ${subMsg}`;
+  if (subMsg) return subMsg;
+  if (subCode) return subCode;
+  return msg || '未知错误';
+}
+
 // ============ 第 3 部分：核心接口 ============
 
 /**
@@ -193,10 +214,10 @@ async function createPaymentRequired(res) {
 
     // 只有业务码 10000 且有 amt_pre_pay_id 才算预下单成功
     if (String(precreateData.code) !== '10000' || !precreateData.amt_pre_pay_id) {
-      console.error('预下单失败：', precreateData.sub_msg || precreateData.msg || '未返回 amt_pre_pay_id');
+      console.error('预下单失败：', extractAlipayError(precreateData));
       return res.status(502).json({
         code: 'PRECREATE_FAILED',
-        message: '支付宝预下单失败：' + (precreateData.sub_msg || precreateData.msg || '无预下单号'),
+        message: '支付宝预下单失败：' + extractAlipayError(precreateData),
       });
     }
     const amtPrePayId = precreateData.amt_pre_pay_id;
@@ -257,7 +278,7 @@ async function verifyAndDeliver(res, paymentProof) {
     // 说明：alipay-sdk 在配置 alipayPublicKey 后，exec() 内部会自动验证返回签名 sign，
     // 无需也不应在这里重复手工验签（官方要求"用支付宝公钥验签"由 SDK 完成）。
     if (String(data.code) !== '10000') {
-      console.error('验付失败：', data.sub_msg || data.msg);
+      console.error('验付失败：', extractAlipayError(data));
       return createPaymentRequired(res);
     }
 
@@ -327,7 +348,7 @@ async function verifyAndDeliver(res, paymentProof) {
     });
     const confirmData = confirmResp.alipay_aipay_agent_fulfillment_confirm_response || confirmResp;
     if (String(confirmData.code) !== '10000') {
-      console.error('履约确认失败：', confirmData.sub_msg || confirmData.msg);
+      console.error('履约确认失败：', extractAlipayError(confirmData));
       return res.status(502).json({ code: 'FULFILLMENT_CONFIRM_FAILED', message: '履约确认失败，请用同一凭证重试' });
     }
 
